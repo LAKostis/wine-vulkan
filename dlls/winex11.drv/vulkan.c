@@ -26,6 +26,7 @@
 #include "winbase.h"
 
 #include "wine/debug.h"
+#include "wine/heap.h"
 #include "wine/library.h"
 
 /* We only want host compatible structures and don't need alignment. */
@@ -41,6 +42,13 @@ WINE_DEFAULT_DEBUG_CHANNEL(vulkan);
 #ifndef ARRAY_SIZE
 #define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
 #endif
+
+/* All Vulkan structures use this structure for the first elements. */
+struct wine_vk_structure_header
+{
+    VkStructureType sType;
+    const void *pNext;
+};
 
 static VkResult (*pvkCreateInstance)(const VkInstanceCreateInfo *, const VkAllocationCallbacks *, VkInstance *);
 static void (*pvkDestroyInstance)(VkInstance, const VkAllocationCallbacks *);
@@ -72,6 +80,74 @@ LOAD_FUNCPTR(vkGetInstanceProcAddr)
     return TRUE;
 }
 
+/* Helper function for converting between win32 and X11 compatible VkInstanceCreateInfo.
+ * Caller is responsible for allocation and cleanup of 'dst'.
+ */
+static VkResult wine_vk_instance_convert_create_info(const VkInstanceCreateInfo *src, VkInstanceCreateInfo *dst)
+{
+    int i;
+    const char **enabled_extensions = NULL;
+
+    dst->sType = src->sType;
+    dst->flags = src->flags;
+    dst->pApplicationInfo = src->pApplicationInfo;
+
+    /* Application + loader can pass in a chain of extensions through pNext e.g. VK_EXT_debug_report
+     * and layers (not sure why loader doesn't filter out loaders to ICD). We need to see how to handle
+     * these as we can't just blindly pass structures through as some like VK_EXT_debug_report have
+     * callbacks. Mesa ANV / Radv are ignoring pNext at the moment, unclear what binary blobs do.
+     * Since in our case we are going through the Linux vulkan loader, the loader itself will add
+     * some duplicate layers, so for now it is probably best to ignore extra extensions.
+     */
+    if (src->pNext)
+    {
+        const struct wine_vk_structure_header *header;
+
+        for (header = src->pNext; header; header = header->pNext)
+        {
+            FIXME("Application requested a linked structure of type %d\n", header->sType);
+        }
+    }
+    /* For now don't support anything. */
+    dst->pNext = NULL;
+
+    /* ICDs don't support any layers (at least at time of writing). The loader seems to not
+     * filter out layer information when it reaches us. To avoid confusion by the native loader
+     * we should filter.
+     */
+    dst->enabledLayerCount = 0;
+    dst->ppEnabledLayerNames = NULL;
+
+    if (src->enabledExtensionCount > 0)
+    {
+        enabled_extensions = heap_alloc(src->enabledExtensionCount * sizeof(*src->ppEnabledExtensionNames));
+        if (!enabled_extensions)
+        {
+            ERR("Failed to allocate memory for enabled extensions\n");
+            return VK_ERROR_OUT_OF_HOST_MEMORY;
+        }
+
+        for (i = 0; i < src->enabledExtensionCount; i++)
+        {
+            /* Substitute extension with X11 else copy. Long-term when we support more
+             * extenions we should store these translations in a list.
+             */
+            if (!strcmp(src->ppEnabledExtensionNames[i], "VK_KHR_win32_surface"))
+            {
+                enabled_extensions[i] = "VK_KHR_xlib_surface";
+            }
+            else
+            {
+                enabled_extensions[i] = src->ppEnabledExtensionNames[i];
+            }
+        }
+        dst->ppEnabledExtensionNames = (const char**)enabled_extensions;
+    }
+    dst->enabledExtensionCount = src->enabledExtensionCount;
+
+    return VK_SUCCESS;
+}
+
 static VkResult X11DRV_vkAcquireNextImageKHR(VkDevice device, VkSwapchainKHR swapchain,
         uint64_t timeout, VkSemaphore semaphore, VkFence fence, uint32_t *index)
 {
@@ -85,19 +161,26 @@ static VkResult X11DRV_vkAcquireNextImageKHR(VkDevice device, VkSwapchainKHR swa
 static VkResult X11DRV_vkCreateInstance(const VkInstanceCreateInfo *create_info,
         const VkAllocationCallbacks *allocator, VkInstance *instance)
 {
+    VkInstanceCreateInfo create_info_host;
+    VkResult res;
     TRACE("create_info %p, allocator %p, instance %p\n", create_info, allocator, instance);
 
     if (allocator)
         FIXME("Support for allocation callbacks not implemented yet\n");
 
-    /* TODO: convert win32 to x11 extensions here. */
-    if (create_info->enabledExtensionCount > 0)
+    res = wine_vk_instance_convert_create_info(create_info, &create_info_host);
+    if (res != VK_SUCCESS)
     {
-        FIXME("Extensions are not supported yet, aborting!\n");
-        return VK_ERROR_INCOMPATIBLE_DRIVER;
+        ERR("Failed to convert instance create info, res=%d\n", res);
+        return res;
     }
 
-    return pvkCreateInstance(create_info, NULL /* allocator */, instance);
+    res = pvkCreateInstance(&create_info_host, NULL /* allocator */, instance);
+
+    if (create_info_host.ppEnabledExtensionNames)
+        heap_free((void*)create_info_host.ppEnabledExtensionNames);
+
+    return res;
 }
 
 static VkResult X11DRV_vkCreateSwapchainKHR(VkDevice device,
