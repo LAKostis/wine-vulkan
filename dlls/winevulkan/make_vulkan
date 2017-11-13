@@ -397,7 +397,10 @@ class VkFunction(object):
         if self.name == "vkCreateSwapchainKHR":
             return False
 
-        if self.is_device_func():
+        if self.name in ["vkAllocateCommandBuffers", "vkFreeCommandBuffers"]:
+            return True
+
+        if self.params[0].type in ["VkCommandBuffer", "VkQueue"]:
             return True
 
         return False
@@ -1865,7 +1868,16 @@ class VkGenerator(object):
                 LOGGER.debug("skipping {0} in vulkan_device_funcs".format(vk_func.name))
                 continue
 
-            f.write("    {0};\n".format(vk_func.pfn(conv=False)))
+            # Temporary filter out functions, which need conversion, but for which
+            # we are only implemented stubs at this point.
+            if not vk_func.needs_stub() and vk_func.needs_conversion():
+                f.write("#if defined(USE_STRUCT_CONVERSION)\n")
+                f.write("    {0};\n".format(vk_func.pfn(conv=True)))
+                f.write("#else\n")
+                f.write("    {0};\n".format(vk_func.pfn(conv=False)))
+                f.write("#endif\n")
+            else:
+                f.write("    {0};\n".format(vk_func.pfn(conv=False)))
         f.write("};\n\n")
 
         f.write("/* For use by vkInstance and children */\n")
