@@ -73,6 +73,7 @@ static VkResult (*pvkCreateXlibSurfaceKHR)(VkInstance, const VkXlibSurfaceCreate
 static void (*pvkDestroyInstance)(VkInstance, const VkAllocationCallbacks *);
 static void * (*pvkGetDeviceProcAddr)(VkDevice, const char *);
 static void * (*pvkGetInstanceProcAddr)(VkInstance, const char *);
+static VkBool32 (*pvkGetPhysicalDeviceXlibPresentationSupportKHR)(VkPhysicalDevice, uint32_t, Display *, VisualID);
 
 struct VkExtensionProperties winex11_vk_instance_extensions[] = {
     { "VK_KHR_surface", 1 },
@@ -95,6 +96,7 @@ LOAD_FUNCPTR(vkCreateXlibSurfaceKHR)
 LOAD_FUNCPTR(vkDestroyInstance)
 LOAD_FUNCPTR(vkGetDeviceProcAddr)
 LOAD_FUNCPTR(vkGetInstanceProcAddr)
+LOAD_FUNCPTR(vkGetPhysicalDeviceXlibPresentationSupportKHR)
 #undef LOAD_FUNCPTR
 
     return TRUE;
@@ -372,8 +374,10 @@ static VkResult X11DRV_vkGetPhysicalDeviceSurfaceSupportKHR(VkPhysicalDevice phy
 static VkBool32 X11DRV_vkGetPhysicalDeviceWin32PresentationSupportKHR(VkPhysicalDevice phys_dev,
         uint32_t index)
 {
-    FIXME("stub %p %u\n", phys_dev, index);
-    return VK_FALSE;
+    TRACE("%p %u\n", phys_dev, index);
+
+    return pvkGetPhysicalDeviceXlibPresentationSupportKHR(phys_dev, index, gdi_display,
+            default_visual.visual->visualid);
 }
 
 static VkResult X11DRV_vkGetSwapchainImagesKHR(VkDevice device,
